@@ -43,10 +43,16 @@ TMUX = "tmux"
 DEFAULT_INTERVAL_SECONDS = int(os.environ.get("CURSOR_NOTIFIER_INTERVAL", "7"))
 DEFAULT_SCAN_LINES = int(os.environ.get("CURSOR_NOTIFIER_LINES", "120"))
 DEFAULT_MATCH_COMMAND = os.environ.get("CURSOR_NOTIFIER_MATCH_COMMAND", r"^(cursor|cursor-agent)$")
-DEFAULT_MATCH_TEXT = os.environ.get("CURSOR_NOTIFIER_MATCH_TEXT", r"cursor[-_ ]?agent|Cursor Agent|Cursor-?Agent")
+DEFAULT_MATCH_TEXT = os.environ.get(
+    "CURSOR_NOTIFIER_MATCH_TEXT",
+    # Broader UI heuristics that often appear in cursor panes
+    r"cursor[-_ ]?agent|Add a follow-up|Auto-run all commands|ctrl\+r to review edits|GPT-?\d|files edited|@ files|! shell|/ commands",
+)
 DEFAULT_WEBHOOK_URL = os.environ.get("CURSOR_NOTIFIER_WEBHOOK")
 
-TOKEN_REGEX = re.compile(r"\b(\d+\s+tokens|tokens)\b", re.IGNORECASE)
+# Match token counters like "12 tokens", "12.34k tokens", "5.3k tokens", "554k tokens"
+# Examples covered: integer or decimal number, optional 'k' suffix, then the word 'tokens'
+TOKEN_REGEX = re.compile(r"\b\d+(?:\.\d+)?k?\s+tokens\b", re.IGNORECASE)
 
 
 @dataclass
@@ -59,6 +65,7 @@ class Pane:
     current_path: str
     pane_pid: str
     current_command: str
+    pane_tty: str
 
     @property
     def human_ref(self) -> str:
@@ -79,6 +86,7 @@ class Notifier:
         scan_lines: int,
         match_command_regex: str,
         match_text_regex: str,
+        monitor_all: bool,
         verbose: bool,
         dry_run: bool,
     ) -> None:
@@ -87,6 +95,7 @@ class Notifier:
         self.scan_lines = max(20, scan_lines)
         self.match_command = re.compile(match_command_regex) if match_command_regex else None
         self.match_text = re.compile(match_text_regex, re.IGNORECASE) if match_text_regex else None
+        self.monitor_all = monitor_all
         self.verbose = verbose
         self.dry_run = dry_run
         self.pane_id_to_state: Dict[str, PaneState] = {}
@@ -125,17 +134,24 @@ class Notifier:
             time.sleep(self.interval_seconds)
 
     def _should_monitor_pane(self, pane: Pane) -> bool:
-        match_by_cmd = bool(self.match_command and self.match_command.search(pane.current_command))
-        if match_by_cmd:
+        if self.monitor_all:
             return True
-        # As a fallback, cheaply capture a tiny tail and see if it mentions cursor agent.
-        if self.match_text:
-            try:
-                tail_text = self._capture_pane_text(pane.pane_id, 40)
-                if self.match_text.search(tail_text):
-                    return True
-            except Exception:
-                return False
+        # Prefer foreground process on the pane's TTY if available
+        fg_comm = self._get_foreground_command(pane)
+        if fg_comm and self.match_command and self.match_command.search(fg_comm):
+            return True
+        # Fallback: tmux-reported current command
+        if self.match_command and self.match_command.search(pane.current_command):
+            return True
+        # As a fallback, cheaply capture a tiny tail and look for either tokens or recognizable UI text.
+        try:
+            tail_text = self._capture_pane_text(pane.pane_id, 60)
+        except Exception:
+            return False
+        if TOKEN_REGEX.search(tail_text):
+            return True
+        if self.match_text and self.match_text.search(tail_text):
+            return True
         return False
 
     def _detect_active(self, text: str) -> bool:
@@ -208,7 +224,10 @@ class Notifier:
         return None
 
     def _list_tmux_panes(self) -> List[Pane]:
-        fmt = "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_active}\t#{pane_current_path}\t#{pane_pid}\t#{pane_current_command}"
+        fmt = (
+            "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_active}"
+            "\t#{pane_current_path}\t#{pane_pid}\t#{pane_current_command}\t#{pane_tty}"
+        )
         cp = subprocess.run(
             [TMUX, "list-panes", "-a", "-F", fmt],
             check=False,
@@ -222,9 +241,9 @@ class Notifier:
         panes: List[Pane] = []
         for line in cp.stdout.splitlines():
             parts = line.split("\t")
-            if len(parts) != 8:
+            if len(parts) != 9:
                 continue
-            session_name, window_index, pane_index, pane_id, active_flag, path, pid, cmd = parts
+            session_name, window_index, pane_index, pane_id, active_flag, path, pid, cmd, tty = parts
             panes.append(
                 Pane(
                     session_name=session_name,
@@ -235,9 +254,45 @@ class Notifier:
                     current_path=path,
                     pane_pid=pid,
                     current_command=cmd,
+                    pane_tty=tty,
                 )
             )
         return panes
+
+    def _get_foreground_command(self, pane: Pane) -> Optional[str]:
+        # Use ps to find the process in the foreground process group on this TTY (marked with '+')
+        tty = pane.pane_tty
+        if not tty:
+            return None
+        tty_short = tty.replace("/dev/", "")
+        try:
+            cp = subprocess.run(
+                [
+                    "ps",
+                    "-t",
+                    tty_short,
+                    "-o",
+                    "pid=,stat=,comm=",
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=3,
+            )
+        except Exception:
+            return None
+        for raw in cp.stdout.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            parts = line.split(None, 2)
+            if len(parts) < 3:
+                continue
+            _pid_str, stat, comm = parts
+            if "+" in stat:
+                return comm
+        return None
 
     def _capture_pane_text(self, pane_id: str, lines: int) -> str:
         # -J joins wrapped lines; -p prints; -S -N starts N lines from the bottom
@@ -261,6 +316,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--lines", type=int, default=DEFAULT_SCAN_LINES, help="How many recent lines to scan (default: env or 120)")
     parser.add_argument("--match-command", default=DEFAULT_MATCH_COMMAND, help="Regex to match pane current command for monitoring (default targets cursor/cursor-agent)")
     parser.add_argument("--match-text", default=DEFAULT_MATCH_TEXT, help="Regex to match pane buffer text for monitoring (default targets cursor agent)")
+    parser.add_argument("--all", dest="monitor_all", action="store_true", help="Monitor all panes (ignore match filters)")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--dry-run", action="store_true", help="Do not send webhooks; log only")
     return parser.parse_args(argv)
@@ -274,6 +330,7 @@ def main() -> None:
         scan_lines=args.lines,
         match_command_regex=args.match_command,
         match_text_regex=args.match_text,
+        monitor_all=args.monitor_all,
         verbose=args.verbose,
         dry_run=args.dry_run,
     )
