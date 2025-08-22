@@ -138,7 +138,7 @@ class Notifier:
         # Monitor panes that have any process on this TTY whose executable name is in configured list
         tty_names = self._pane_tty_process_names(pane)
         decision = any(name in tty_names for name in self.process_names)
-        if self.verbose and (self.debug or decision):
+        if self.debug:
             self.log(
                 f"pane={pane.human_ref} tty={pane.pane_tty or '-'} names={','.join(sorted(tty_names)) or '-'} targets={','.join(self.process_names)} cmd={pane.current_command} monitor={decision}"
             )
@@ -155,15 +155,19 @@ class Notifier:
         if state.last_seen_active is None:
             state.last_seen_active = looks_active
             state.last_transition_ts = time.time()
-            self.log(f"Initialized state for {pane.human_ref}: active={looks_active}")
+            if self.verbose:
+                self.log(f"state init: {pane.human_ref} -> {'active' if looks_active else 'idle'}")
             return
 
         if state.last_seen_active and not looks_active:
             # Active -> Idle: send notification
+            if self.verbose:
+                self.log(f"state change: {pane.human_ref} active -> idle")
             self._send_idle_notification(pane)
             state.last_transition_ts = time.time()
         elif (not state.last_seen_active) and looks_active:
-            self.log(f"{pane.human_ref} became active again")
+            if self.verbose:
+                self.log(f"state change: {pane.human_ref} idle -> active")
             state.last_transition_ts = time.time()
         state.last_seen_active = looks_active
 
