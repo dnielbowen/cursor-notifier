@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export CURSOR_NOTIFIER_WEBHOOK="https://discord.com/api/webhooks//TID/WEBHOOKURL"
-
 # Resolve the real script directory even if invoked via a symlink
 SOURCE="${BASH_SOURCE[0]}"
 while [[ -h "$SOURCE" ]]; do

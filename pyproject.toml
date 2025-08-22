@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cursor-notifier"
+version = "0.1.0"
+description = "Discord webhook notifier for cursor-agent activity in tmux panes"
+readme = "README.md"
+authors = [{ name = "Daniel Bowen", email = "dnielbowen@gmail.com" }]
+license = { text = "MIT" }
+requires-python = ">=3.8"
+keywords = ["tmux", "discord", "webhook", "cursor-agent", "notifier"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+  "python-dotenv>=1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourname/cursor-notifier"
+Issues = "https://github.com/yourname/cursor-notifier/issues"
+
+[project.scripts]
+cursor-notifier = "cursor_notifier:main"
+
+[tool.setuptools]
+include-package-data = true
+py-modules = ["cursor_notifier"]

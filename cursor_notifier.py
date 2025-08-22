@@ -38,6 +38,13 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
+# Optional .env support (load before reading environment variables)
+try:  # noqa: SIM105
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv()
+except Exception:
+    pass
+
 
 TMUX = "tmux"
 DEFAULT_INTERVAL_SECONDS = int(os.environ.get("CURSOR_NOTIFIER_INTERVAL", "7"))
