@@ -50,10 +50,9 @@ CURSOR_NOTIFIER_LINES=120
 
 ## Usage
 
-After installation, you can run the console scripts (both names are provided):
+After installation, you can run the console script:
 
 ```bash
-cursor-notifier --verbose
 notifier-cursor --verbose
 ```
 
@@ -77,8 +76,6 @@ Send a quick test:
 
 ```bash
 notifier-cursor --test "hello from cursor-notifier"
-# or
-cursor-notifier --test
 ```
 
 ## How it works
