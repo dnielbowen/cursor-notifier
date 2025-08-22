@@ -42,12 +42,7 @@ from typing import Dict, List, Optional, Tuple
 TMUX = "tmux"
 DEFAULT_INTERVAL_SECONDS = int(os.environ.get("CURSOR_NOTIFIER_INTERVAL", "7"))
 DEFAULT_SCAN_LINES = int(os.environ.get("CURSOR_NOTIFIER_LINES", "120"))
-DEFAULT_MATCH_COMMAND = os.environ.get("CURSOR_NOTIFIER_MATCH_COMMAND", r"^(cursor|cursor-agent)$")
-DEFAULT_MATCH_TEXT = os.environ.get(
-    "CURSOR_NOTIFIER_MATCH_TEXT",
-    # Broader UI heuristics that often appear in cursor panes
-    r"cursor[-_ ]?agent|Add a follow-up|Auto-run all commands|ctrl\+r to review edits|GPT-?\d|files edited|@ files|! shell|/ commands",
-)
+DEFAULT_PROCESS_NAMES = os.environ.get("CURSOR_NOTIFIER_PROCESSES", "cursor-agent,node")
 DEFAULT_WEBHOOK_URL = os.environ.get("CURSOR_NOTIFIER_WEBHOOK")
 
 # Match token counters like "12 tokens", "12.34k tokens", "5.3k tokens", "554k tokens"
@@ -84,18 +79,17 @@ class Notifier:
         webhook_url: Optional[str],
         interval_seconds: int,
         scan_lines: int,
-        match_command_regex: str,
-        match_text_regex: str,
-        monitor_all: bool,
+        process_names: List[str],
+        debug: bool,
         verbose: bool,
         dry_run: bool,
     ) -> None:
         self.webhook_url = webhook_url
         self.interval_seconds = max(2, interval_seconds)
         self.scan_lines = max(20, scan_lines)
-        self.match_command = re.compile(match_command_regex) if match_command_regex else None
-        self.match_text = re.compile(match_text_regex, re.IGNORECASE) if match_text_regex else None
-        self.monitor_all = monitor_all
+        # Normalize configured process names
+        self.process_names = sorted({name.strip() for name in process_names if name.strip()})
+        self.debug = debug
         self.verbose = verbose
         self.dry_run = dry_run
         self.pane_id_to_state: Dict[str, PaneState] = {}
@@ -134,25 +128,14 @@ class Notifier:
             time.sleep(self.interval_seconds)
 
     def _should_monitor_pane(self, pane: Pane) -> bool:
-        if self.monitor_all:
-            return True
-        # Prefer foreground process on the pane's TTY if available
-        fg_comm = self._get_foreground_command(pane)
-        if fg_comm and self.match_command and self.match_command.search(fg_comm):
-            return True
-        # Fallback: tmux-reported current command
-        if self.match_command and self.match_command.search(pane.current_command):
-            return True
-        # As a fallback, cheaply capture a tiny tail and look for either tokens or recognizable UI text.
-        try:
-            tail_text = self._capture_pane_text(pane.pane_id, 60)
-        except Exception:
-            return False
-        if TOKEN_REGEX.search(tail_text):
-            return True
-        if self.match_text and self.match_text.search(tail_text):
-            return True
-        return False
+        # Monitor panes that have any process on this TTY whose executable name is in configured list
+        tty_names = self._pane_tty_process_names(pane)
+        decision = any(name in tty_names for name in self.process_names)
+        if self.verbose and (self.debug or decision):
+            self.log(
+                f"pane={pane.human_ref} tty={pane.pane_tty or '-'} names={','.join(sorted(tty_names)) or '-'} targets={','.join(self.process_names)} cmd={pane.current_command} monitor={decision}"
+            )
+        return decision
 
     def _detect_active(self, text: str) -> bool:
         # Look at the last ~20 lines for tokens occurrence
@@ -196,15 +179,35 @@ class Notifier:
         if not self.webhook_url:
             raise RuntimeError("webhook_url missing")
         body = json.dumps({"content": content}).encode("utf-8")
+        # Append wait=true so Discord returns JSON on success/errors
+        if "?" in self.webhook_url:
+            url = self.webhook_url + "&wait=true"
+        else:
+            url = self.webhook_url + "?wait=true"
         req = urllib.request.Request(
-            self.webhook_url,
+            url,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "cursor-notifier/1.0 (+https://example.local)",
+            },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            if not (200 <= resp.status < 300):
-                raise RuntimeError(f"Discord webhook status {resp.status}")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                # On success, Discord typically returns 200/204; we accept any 2xx
+                if not (200 <= resp.status < 300):
+                    raise RuntimeError(f"Discord webhook status {resp.status}")
+        except urllib.error.HTTPError as e:
+            err_text = e.read().decode("utf-8", errors="replace")
+            try:
+                err_json = json.loads(err_text)
+                msg = err_json.get("message")
+                code = err_json.get("code")
+                detail = f"{e.code} {e.reason}: {msg} (code {code})"
+            except Exception:
+                detail = f"{e.code} {e.reason}: {err_text.strip()}"
+            raise RuntimeError(f"Discord webhook error: {detail}") from None
 
     def _get_git_branch(self, path: str) -> Optional[str]:
         try:
@@ -259,11 +262,11 @@ class Notifier:
             )
         return panes
 
-    def _get_foreground_command(self, pane: Pane) -> Optional[str]:
-        # Use ps to find the process in the foreground process group on this TTY (marked with '+')
+    def _pane_tty_process_names(self, pane: Pane) -> List[str]:
+        # Return executable names (comm) of all processes attached to this TTY
         tty = pane.pane_tty
         if not tty:
-            return None
+            return []
         tty_short = tty.replace("/dev/", "")
         try:
             cp = subprocess.run(
@@ -272,7 +275,7 @@ class Notifier:
                     "-t",
                     tty_short,
                     "-o",
-                    "pid=,stat=,comm=",
+                    "comm=",
                 ],
                 check=False,
                 stdout=subprocess.PIPE,
@@ -281,18 +284,13 @@ class Notifier:
                 timeout=3,
             )
         except Exception:
-            return None
+            return []
+        names: List[str] = []
         for raw in cp.stdout.splitlines():
-            line = raw.strip()
-            if not line:
-                continue
-            parts = line.split(None, 2)
-            if len(parts) < 3:
-                continue
-            _pid_str, stat, comm = parts
-            if "+" in stat:
-                return comm
-        return None
+            name = raw.strip()
+            if name:
+                names.append(name)
+        return names
 
     def _capture_pane_text(self, pane_id: str, lines: int) -> str:
         # -J joins wrapped lines; -p prints; -S -N starts N lines from the bottom
@@ -314,9 +312,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--webhook-url", default=DEFAULT_WEBHOOK_URL, help="Discord webhook URL (or set CURSOR_NOTIFIER_WEBHOOK)")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS, help="Polling interval seconds (default: env or 7)")
     parser.add_argument("--lines", type=int, default=DEFAULT_SCAN_LINES, help="How many recent lines to scan (default: env or 120)")
-    parser.add_argument("--match-command", default=DEFAULT_MATCH_COMMAND, help="Regex to match pane current command for monitoring (default targets cursor/cursor-agent)")
-    parser.add_argument("--match-text", default=DEFAULT_MATCH_TEXT, help="Regex to match pane buffer text for monitoring (default targets cursor agent)")
-    parser.add_argument("--all", dest="monitor_all", action="store_true", help="Monitor all panes (ignore match filters)")
+    parser.add_argument("--process-names", default=DEFAULT_PROCESS_NAMES, help="Comma-separated executable names to monitor (default: cursor-agent,node)")
+    parser.add_argument("--debug", action="store_true", help="Log diagnostics for all panes (not just matches)")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--dry-run", action="store_true", help="Do not send webhooks; log only")
     return parser.parse_args(argv)
@@ -324,13 +321,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    # Split and normalize process names
+    process_names = [part.strip() for part in (args.process_names or "").split(",") if part.strip()]
     notifier = Notifier(
         webhook_url=args.webhook_url,
         interval_seconds=args.interval,
         scan_lines=args.lines,
-        match_command_regex=args.match_command,
-        match_text_regex=args.match_text,
-        monitor_all=args.monitor_all,
+        process_names=process_names,
+        debug=args.debug,
         verbose=args.verbose,
         dry_run=args.dry_run,
     )
