@@ -50,10 +50,11 @@ CURSOR_NOTIFIER_LINES=120
 
 ## Usage
 
-After installation, you can run the console script:
+After installation, you can run the console scripts (both names are provided):
 
 ```bash
 cursor-notifier --verbose
+notifier-cursor --verbose
 ```
 
 Or from source within this repo:
@@ -71,6 +72,14 @@ Useful flags:
 - `--verbose`: Print logs
 - `--dry-run`: Do not send Discord messages
 - `--test [message]`: Send a test message to the webhook and exit
+
+Send a quick test:
+
+```bash
+notifier-cursor --test "hello from cursor-notifier"
+# or
+cursor-notifier --test
+```
 
 ## How it works
 

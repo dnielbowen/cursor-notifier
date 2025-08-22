@@ -37,11 +37,19 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+from pathlib import Path
 
 # Optional .env support (load before reading environment variables)
 try:  # noqa: SIM105
-    from dotenv import load_dotenv  # type: ignore
-    load_dotenv()
+    from dotenv import load_dotenv, find_dotenv  # type: ignore
+    # 1) Load from current working directory or nearest parent
+    env_path = find_dotenv(usecwd=True)
+    if env_path:
+        load_dotenv(env_path)
+    # 2) Fallback: load a repo-local .env next to this file
+    load_dotenv(Path(__file__).resolve().parent.joinpath('.env'))
+    # 3) Fallback: allow user-level config
+    load_dotenv(Path.home().joinpath('.cursor-notifier.env'))
 except Exception:
     pass
 
@@ -51,6 +59,7 @@ DEFAULT_INTERVAL_SECONDS = int(os.environ.get("CURSOR_NOTIFIER_INTERVAL", "7"))
 DEFAULT_SCAN_LINES = int(os.environ.get("CURSOR_NOTIFIER_LINES", "120"))
 DEFAULT_PROCESS_NAMES = os.environ.get("CURSOR_NOTIFIER_PROCESSES", "cursor-agent,node")
 DEFAULT_WEBHOOK_URL = os.environ.get("CURSOR_NOTIFIER_WEBHOOK")
+DEFAULT_THREAD_ID = os.environ.get("CURSOR_NOTIFIER_THREAD_ID")
 
 # Match token counters like "12 tokens", "12.34k tokens", "5.3k tokens", "554k tokens"
 # Examples covered: integer or decimal number, optional 'k' suffix, then the word 'tokens'
@@ -90,6 +99,7 @@ class Notifier:
         debug: bool,
         verbose: bool,
         dry_run: bool,
+        thread_id: Optional[str] = None,
     ) -> None:
         self.webhook_url = webhook_url
         self.interval_seconds = max(2, interval_seconds)
@@ -100,6 +110,7 @@ class Notifier:
         self.verbose = verbose
         self.dry_run = dry_run
         self.pane_id_to_state: Dict[str, PaneState] = {}
+        self.thread_id = thread_id
 
     def log(self, message: str) -> None:
         if self.verbose:
@@ -182,19 +193,22 @@ class Notifier:
         if self.dry_run:
             return
         try:
-            self._post_discord_message(message)
+            status = self._post_discord_message(message)
+            if self.verbose:
+                self.log(f"WEBHOOK OK: status {status}")
         except Exception as exc:  # noqa: BLE001
             self.log(f"Failed to send webhook: {exc}")
 
-    def _post_discord_message(self, content: str) -> None:
+    def _post_discord_message(self, content: str) -> int:
         if not self.webhook_url:
             raise RuntimeError("webhook_url missing")
         body = json.dumps({"content": content}).encode("utf-8")
         # Append wait=true so Discord returns JSON on success/errors
-        if "?" in self.webhook_url:
-            url = self.webhook_url + "&wait=true"
-        else:
-            url = self.webhook_url + "?wait=true"
+        url = self.webhook_url
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}wait=true"
+        if self.thread_id:
+            url = f"{url}&thread_id={self.thread_id}"
         req = urllib.request.Request(
             url,
             data=body,
@@ -209,6 +223,7 @@ class Notifier:
                 # On success, Discord typically returns 200/204; we accept any 2xx
                 if not (200 <= resp.status < 300):
                     raise RuntimeError(f"Discord webhook status {resp.status}")
+                return resp.status
         except urllib.error.HTTPError as e:
             err_text = e.read().decode("utf-8", errors="replace")
             try:
@@ -321,6 +336,7 @@ class Notifier:
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Notify when cursor-agent becomes idle in tmux panes")
     parser.add_argument("--webhook-url", default=DEFAULT_WEBHOOK_URL, help="Discord webhook URL (or set CURSOR_NOTIFIER_WEBHOOK)")
+    parser.add_argument("--thread-id", default=DEFAULT_THREAD_ID, help="Optional Discord thread_id to post into")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS, help="Polling interval seconds (default: env or 7)")
     parser.add_argument("--lines", type=int, default=DEFAULT_SCAN_LINES, help="How many recent lines to scan (default: env or 120)")
     parser.add_argument("--process-names", default=DEFAULT_PROCESS_NAMES, help="Comma-separated executable names to monitor (default: cursor-agent,node)")
@@ -337,6 +353,7 @@ def main() -> None:
     process_names = [part.strip() for part in (args.process_names or "").split(",") if part.strip()]
     notifier = Notifier(
         webhook_url=args.webhook_url,
+        thread_id=args.thread_id,
         interval_seconds=args.interval,
         scan_lines=args.lines,
         process_names=process_names,
