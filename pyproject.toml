@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cursor-notifier"
-version = "0.1.0"
+version = "0.1.1"
 description = "Discord webhook notifier for cursor-agent activity in tmux panes"
 readme = "README.md"
 authors = [{ name = "Daniel Bowen", email = "dnielbowen@gmail.com" }]
@@ -21,8 +21,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourname/cursor-notifier"
-Issues = "https://github.com/yourname/cursor-notifier/issues"
+Homepage = "https://github.com/dnielbowen/cursor-notifier"
+Issues = "https://github.com/dnielbowen/cursor-notifier/issues"
 
 [project.scripts]
 notifier-cursor = "cursor_notifier:main"
