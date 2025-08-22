@@ -316,6 +316,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--debug", action="store_true", help="Log diagnostics for all panes (not just matches)")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--dry-run", action="store_true", help="Do not send webhooks; log only")
+    parser.add_argument("--test", nargs="?", const="cursor-notifier test message", help="Send a test message and exit (optionally provide custom text)")
     return parser.parse_args(argv)
 
 
@@ -332,6 +333,19 @@ def main() -> None:
         verbose=args.verbose,
         dry_run=args.dry_run,
     )
+    # One-off webhook test path
+    if args.test is not None:
+        message = args.test or "cursor-notifier test message"
+        if args.dry_run:
+            notifier.log(f"[dry-run] Would send test message: {message}")
+            return
+        try:
+            notifier._post_discord_message(message)
+            notifier.log("Test message sent successfully")
+            return
+        except Exception as exc:  # noqa: BLE001
+            print(f"Webhook test failed: {exc}", file=sys.stderr)
+            sys.exit(1)
     notifier.run()
 
 
