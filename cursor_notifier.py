@@ -193,9 +193,7 @@ class Notifier:
         if self.dry_run:
             return
         try:
-            status = self._post_discord_message(message)
-            if self.verbose:
-                self.log(f"WEBHOOK OK: status {status}")
+            self._post_discord_message(message)
         except Exception as exc:  # noqa: BLE001
             self.log(f"Failed to send webhook: {exc}")
 
