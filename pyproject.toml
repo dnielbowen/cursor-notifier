@@ -26,6 +26,7 @@ Issues = "https://github.com/yourname/cursor-notifier/issues"
 
 [project.scripts]
 cursor-notifier = "cursor_notifier:main"
+notifier-cursor = "cursor_notifier:main"
 
 [tool.setuptools]
 include-package-data = true

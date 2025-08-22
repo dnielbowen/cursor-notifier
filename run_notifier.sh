@@ -22,4 +22,14 @@ if [[ ! -d "$VENV_DIR" ]]; then
   "$PIP" install --upgrade pip >/dev/null
 fi
 
+# Ensure dependencies are installed (dotenv and console entrypoints)
+if ! "$PY" -c 'import dotenv' >/dev/null 2>&1; then
+  echo "Bootstrapping dependencies into $VENV_DIR" >&2
+  if [[ -f requirements.txt ]]; then
+    "$PIP" install -r requirements.txt >/dev/null || true
+  fi
+  # Install package in editable mode to get console scripts
+  "$PIP" install -e "$SCRIPT_DIR" >/dev/null || true
+fi
+
 exec "$PY" cursor_notifier.py "$@"

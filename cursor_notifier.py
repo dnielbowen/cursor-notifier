@@ -109,7 +109,7 @@ class Notifier:
     def run(self) -> None:
         self.log("Starting Cursor Agent Notifier")
         if not self.webhook_url and not self.dry_run:
-            print("Error: Discord webhook URL not provided. Set CURSOR_NOTIFIER_WEBHOOK or pass --webhook-url.", file=sys.stderr)
+            print("Error: Discord webhook URL not provided. Set CURSOR_NOTIFIER_WEBHOOK (via env or .env) or pass --webhook-url.", file=sys.stderr)
             sys.exit(2)
 
         while True:
@@ -340,9 +340,12 @@ def main() -> None:
         verbose=args.verbose,
         dry_run=args.dry_run,
     )
-    # One-off webhook test path
+    # One-off webhook test path (test should honor .env loaded at import time)
     if args.test is not None:
         message = args.test or "cursor-notifier test message"
+        if not notifier.webhook_url and not notifier.dry_run:
+            print("Error: no webhook set. Use CURSOR_NOTIFIER_WEBHOOK in .env or --webhook-url.", file=sys.stderr)
+            sys.exit(2)
         if args.dry_run:
             notifier.log(f"[dry-run] Would send test message: {message}")
             return
