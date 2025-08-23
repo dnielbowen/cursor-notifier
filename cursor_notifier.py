@@ -16,10 +16,10 @@ Usage:
   - Or override via CLI flags: --webhook-url, --interval, --lines
 
 Heuristic:
-  - A pane is considered "active" if its recent output contains a token indicator
-    such as "<number> tokens" or the word "tokens" near the bottom of the
-    scrollback. When this disappears (and was previously present), the pane is
-    considered to have become idle.
+  - A pane is considered "active" if its recent output contains either a token
+    indicator such as "<number> tokens" near the bottom of the scrollback,
+    or the phrase "Ctrl+C to stop". When both of these are absent (and a
+    match was previously present), the pane is considered to have become idle.
   - By default we only monitor panes that appear related to cursor/cursor-agent
     either by their current command or by buffer text. You can broaden/narrow
     this using --match-command and --match-text regexes.
@@ -64,6 +64,9 @@ DEFAULT_THREAD_ID = os.environ.get("CURSOR_NOTIFIER_THREAD_ID")
 # Match token counters like "12 tokens", "12.34k tokens", "5.3k tokens", "554k tokens"
 # Examples covered: integer or decimal number, optional 'k' suffix, then the word 'tokens'
 TOKEN_REGEX = re.compile(r"\b\d+(?:\.\d+)?k?\s+tokens\b", re.IGNORECASE)
+
+# Also treat a visible "Ctrl+C to stop" prompt as active
+CTRL_C_TO_STOP_REGEX = re.compile(r"ctrl\+c\s+to\s+stop", re.IGNORECASE)
 
 
 @dataclass
@@ -159,7 +162,8 @@ class Notifier:
         # Look at the last ~20 lines for tokens occurrence
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         tail = "\n".join(lines[-20:])
-        return bool(TOKEN_REGEX.search(tail))
+        # Active if either tokens counter or "Ctrl+C to stop" appears
+        return bool(TOKEN_REGEX.search(tail) or CTRL_C_TO_STOP_REGEX.search(tail))
 
     def _maybe_notify_transition(self, pane: Pane, looks_active: bool, buffer_text: str) -> None:
         state = self.pane_id_to_state.setdefault(pane.pane_id, PaneState())
