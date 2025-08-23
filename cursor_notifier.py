@@ -11,7 +11,7 @@ No third-party dependencies.
 
 Usage:
   - Set environment variable CURSOR_NOTIFIER_WEBHOOK to your Discord webhook URL
-  - Optionally set CURSOR_NOTIFIER_INTERVAL (seconds, default 7)
+  - Optionally set CURSOR_NOTIFIER_INTERVAL (seconds, default 4)
   - Optionally set CURSOR_NOTIFIER_LINES (buffer lines to scan, default 120)
   - Or override via CLI flags: --webhook-url, --interval, --lines
 
@@ -55,11 +55,15 @@ except Exception:
 
 
 TMUX = "tmux"
-DEFAULT_INTERVAL_SECONDS = int(os.environ.get("CURSOR_NOTIFIER_INTERVAL", "7"))
+DEFAULT_INTERVAL_SECONDS = int(os.environ.get("CURSOR_NOTIFIER_INTERVAL", "4"))
 DEFAULT_SCAN_LINES = int(os.environ.get("CURSOR_NOTIFIER_LINES", "120"))
 DEFAULT_PROCESS_NAMES = os.environ.get("CURSOR_NOTIFIER_PROCESSES", "cursor-agent,node")
 DEFAULT_WEBHOOK_URL = os.environ.get("CURSOR_NOTIFIER_WEBHOOK")
 DEFAULT_THREAD_ID = os.environ.get("CURSOR_NOTIFIER_THREAD_ID")
+
+# Require N consecutive misses (no tokens and no Ctrl+C prompt) before
+# considering an active pane to have become idle. Helps avoid repaint flicker.
+DEFAULT_CONSECUTIVE_MISSES = int(os.environ.get("CURSOR_NOTIFIER_MISSES", "2"))
 
 # Match token counters like "12 tokens", "12.34k tokens", "5.3k tokens", "554k tokens"
 # Examples covered: integer or decimal number, optional 'k' suffix, then the word 'tokens'
@@ -90,6 +94,7 @@ class Pane:
 class PaneState:
     last_seen_active: Optional[bool] = None
     last_transition_ts: float = 0.0
+    consecutive_misses: int = 0
 
 
 class Notifier:
@@ -114,6 +119,7 @@ class Notifier:
         self.dry_run = dry_run
         self.pane_id_to_state: Dict[str, PaneState] = {}
         self.thread_id = thread_id
+        self.consecutive_misses_required = max(1, DEFAULT_CONSECUTIVE_MISSES)
 
     def log(self, message: str) -> None:
         if self.verbose:
@@ -174,18 +180,41 @@ class Notifier:
                 self.log(f"state init: {pane.human_ref} -> {'active' if looks_active else 'idle'}")
             return
 
-        if state.last_seen_active and not looks_active:
-            # Active -> Idle: send notification
-            if self.verbose:
-                self.log(f"state change: {pane.human_ref} active -> idle")
-            active_duration_s = max(0.0, time.time() - (state.last_transition_ts or time.time()))
-            self._send_idle_notification(pane, active_duration_s)
-            state.last_transition_ts = time.time()
-        elif (not state.last_seen_active) and looks_active:
-            if self.verbose:
-                self.log(f"state change: {pane.human_ref} idle -> active")
-            state.last_transition_ts = time.time()
-        state.last_seen_active = looks_active
+        if looks_active:
+            # Reset miss counter and handle idle -> active transition
+            state.consecutive_misses = 0
+            if not state.last_seen_active:
+                if self.verbose:
+                    self.log(f"state change: {pane.human_ref} idle -> active")
+                state.last_transition_ts = time.time()
+                state.last_seen_active = True
+            else:
+                # Still active, nothing to do
+                state.last_seen_active = True
+            return
+
+        # looks_active is False
+        if state.last_seen_active:
+            state.consecutive_misses += 1
+            if state.consecutive_misses >= self.consecutive_misses_required:
+                # Active -> Idle after required consecutive misses
+                if self.verbose:
+                    self.log(
+                        f"state change: {pane.human_ref} active -> idle (misses={state.consecutive_misses})"
+                    )
+                active_duration_s = max(0.0, time.time() - (state.last_transition_ts or time.time()))
+                self._send_idle_notification(pane, active_duration_s)
+                state.last_transition_ts = time.time()
+                state.last_seen_active = False
+                state.consecutive_misses = 0
+            else:
+                if self.verbose:
+                    self.log(
+                        f"debounce: {pane.human_ref} miss {state.consecutive_misses}/{self.consecutive_misses_required}"
+                    )
+        else:
+            # Already idle, keep it idle
+            state.last_seen_active = False
 
     def _send_idle_notification(self, pane: Pane, active_duration_seconds: float) -> None:
         path = pane.current_path
@@ -359,7 +388,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Notify when cursor-agent becomes idle in tmux panes")
     parser.add_argument("--webhook-url", default=DEFAULT_WEBHOOK_URL, help="Discord webhook URL (or set CURSOR_NOTIFIER_WEBHOOK)")
     parser.add_argument("--thread-id", default=DEFAULT_THREAD_ID, help="Optional Discord thread_id to post into")
-    parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS, help="Polling interval seconds (default: env or 7)")
+    parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS, help="Polling interval seconds (default: env or 4)")
     parser.add_argument("--lines", type=int, default=DEFAULT_SCAN_LINES, help="How many recent lines to scan (default: env or 120)")
     parser.add_argument("--process-names", default=DEFAULT_PROCESS_NAMES, help="Comma-separated executable names to monitor (default: cursor-agent,node)")
     parser.add_argument("--debug", action="store_true", help="Log diagnostics for all panes (not just matches)")

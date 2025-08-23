@@ -35,17 +35,19 @@ pip install -e .
 You can configure via environment variables or a `.env` file in the project directory (loaded automatically if `python-dotenv` is installed).
 
 - `CURSOR_NOTIFIER_WEBHOOK`: Discord webhook URL (required unless `--dry-run`)
-- `CURSOR_NOTIFIER_INTERVAL`: Poll interval seconds (default: 7)
+- `CURSOR_NOTIFIER_INTERVAL`: Poll interval seconds (default: 4)
 - `CURSOR_NOTIFIER_LINES`: Number of lines to scan from tmux buffer (default: 120)
 - `CURSOR_NOTIFIER_PROCESSES`: Comma-separated executable names to treat as cursor agent (default: `cursor-agent,node`)
+- `CURSOR_NOTIFIER_MISSES`: Consecutive misses before idling (default: 2)
 
 Example `.env`:
 
 ```env
 CURSOR_NOTIFIER_WEBHOOK=https://discord.com/api/webhooks/123/abc
 CURSOR_NOTIFIER_PROCESSES=cursor-agent,node
-CURSOR_NOTIFIER_INTERVAL=7
+CURSOR_NOTIFIER_INTERVAL=4
 CURSOR_NOTIFIER_LINES=120
+CURSOR_NOTIFIER_MISSES=2
 ```
 
 ## Usage
@@ -65,7 +67,7 @@ Or from source within this repo:
 Useful flags:
 
 - `--process-names`: Comma-separated executable names to monitor (e.g., `cursor-agent,node`)
-- `--interval`: Polling interval seconds
+- `--interval`: Polling interval seconds (default 4)
 - `--lines`: How many recent lines to scan in each pane
 - `--debug`: Log diagnostics for all panes
 - `--verbose`: Print logs
