@@ -174,7 +174,8 @@ class Notifier:
             # Active -> Idle: send notification
             if self.verbose:
                 self.log(f"state change: {pane.human_ref} active -> idle")
-            self._send_idle_notification(pane)
+            active_duration_s = max(0.0, time.time() - (state.last_transition_ts or time.time()))
+            self._send_idle_notification(pane, active_duration_s)
             state.last_transition_ts = time.time()
         elif (not state.last_seen_active) and looks_active:
             if self.verbose:
@@ -182,13 +183,15 @@ class Notifier:
             state.last_transition_ts = time.time()
         state.last_seen_active = looks_active
 
-    def _send_idle_notification(self, pane: Pane) -> None:
+    def _send_idle_notification(self, pane: Pane, active_duration_seconds: float) -> None:
         path = pane.current_path
         branch = self._get_git_branch(path)
         ref = pane.human_ref
         message = f"Cursor-Agent idle in {ref} — {path}"
         if branch:
             message += f" (branch {branch})"
+        # Append active duration information
+        message += f" — active for {self._format_duration(active_duration_seconds)}"
         self.log(f"NOTIFY: {message}")
         if self.dry_run:
             return
@@ -196,6 +199,23 @@ class Notifier:
             self._post_discord_message(message)
         except Exception as exc:  # noqa: BLE001
             self.log(f"Failed to send webhook: {exc}")
+
+    def _format_duration(self, seconds: float) -> str:
+        # Format a duration like 1h 2m 3s (omit leading zeros)
+        total = int(max(0, round(seconds)))
+        days, rem = divmod(total, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes, secs = divmod(rem, 60)
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes:
+            parts.append(f"{minutes}m")
+        if secs or not parts:
+            parts.append(f"{secs}s")
+        return " ".join(parts)
 
     def _post_discord_message(self, content: str) -> int:
         if not self.webhook_url:
