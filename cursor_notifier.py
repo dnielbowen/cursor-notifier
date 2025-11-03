@@ -30,13 +30,14 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from pathlib import Path
 
 # Optional .env support (load before reading environment variables)
@@ -113,7 +114,7 @@ class Notifier:
         self.interval_seconds = max(2, interval_seconds)
         self.scan_lines = max(20, scan_lines)
         # Normalize configured process names
-        self.process_names = sorted({name.strip() for name in process_names if name.strip()})
+        self.process_names = sorted({name.strip().lower() for name in process_names if name.strip()})
         self.debug = debug
         self.verbose = verbose
         self.dry_run = dry_run
@@ -220,11 +221,11 @@ class Notifier:
         path = pane.current_path
         branch = self._get_git_branch(path)
         ref = pane.human_ref
-        message = f"Cursor-Agent idle in {ref} — {path}"
+        message = f"Cursor-Agent idle in {ref} \u2014 {path}"
         if branch:
             message += f" (branch {branch})"
         # Append active duration information
-        message += f" — active for {self._format_duration(active_duration_seconds)}"
+        message += f" \u2014 active for {self._format_duration(active_duration_seconds)}"
         self.log(f"NOTIFY: {message}")
         if self.dry_run:
             return
@@ -340,7 +341,7 @@ class Notifier:
         return panes
 
     def _pane_tty_process_names(self, pane: Pane) -> List[str]:
-        # Return executable names (comm) of all processes attached to this TTY
+        # Return normalized executable identifiers of all processes attached to this TTY
         tty = pane.pane_tty
         if not tty:
             return []
@@ -352,7 +353,7 @@ class Notifier:
                     "-t",
                     tty_short,
                     "-o",
-                    "comm=",
+                    "comm=,args=",
                 ],
                 check=False,
                 stdout=subprocess.PIPE,
@@ -362,12 +363,40 @@ class Notifier:
             )
         except Exception:
             return []
-        names: List[str] = []
+        names: Set[str] = set()
         for raw in cp.stdout.splitlines():
-            name = raw.strip()
-            if name:
-                names.append(name)
-        return names
+            line = raw.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            comm = parts[0].strip()
+            if comm:
+                names.add(comm.lower())
+            if len(parts) == 1:
+                continue
+            args_text = parts[1].strip()
+            if not args_text:
+                continue
+            try:
+                argv = shlex.split(args_text)
+            except Exception:
+                argv = []
+            if not argv:
+                continue
+            argv0 = argv[0]
+            if argv0:
+                base = Path(argv0).name.lower()
+                if base:
+                    names.add(base)
+                if argv0.startswith("-"):
+                    stripped = argv0.lstrip("-").lower()
+                    if stripped:
+                        names.add(stripped)
+            for token in argv:
+                token_lower = token.lower()
+                if "cursor-agent" in token_lower:
+                    names.add("cursor-agent")
+        return sorted(names)
 
     def _capture_pane_text(self, pane_id: str, lines: int) -> str:
         # -J joins wrapped lines; -p prints; -S -N starts N lines from the bottom
